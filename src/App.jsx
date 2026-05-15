@@ -302,7 +302,7 @@ function Badge({ bandeira }) {
   );
 }
 
-function ProgressBar({ value, max, dark }) {
+function ProgressBar({ value, max, dark, unit = "kWh", formatter = fmt }) {
   const pct = Math.min(100, max > 0 ? (value / max) * 100 : 0);
   const color = pct >= 90 ? COLORS.red : pct >= 70 ? COLORS.amber : COLORS.primary;
   return (
@@ -311,7 +311,7 @@ function ProgressBar({ value, max, dark }) {
         <div style={{ height: "100%", width: `${pct}%`, background: color, borderRadius: 8, transition: "width 0.6s ease" }} />
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", marginTop: 5 }}>
-        <span style={{ fontSize: 12, color: dark ? "rgba(255,255,255,0.5)" : "#999" }}>{fmt(value)} / {fmt(max)} kWh</span>
+        <span style={{ fontSize: 12, color: dark ? "rgba(255,255,255,0.5)" : "#999" }}>{formatter(value)} / {formatter(max)} {unit}</span>
         <span style={{ fontSize: 12, fontWeight: 600, color }}>{pct.toFixed(0)}%</span>
       </div>
     </div>
@@ -319,15 +319,59 @@ function ProgressBar({ value, max, dark }) {
 }
 
 // ─── ABA: INÍCIO ─────────────────────────────────────────────────────────────
-function AbaInicio({ leituras, config, dark, setAba }) {
-  const sorted = [...leituras].sort((a, b) => {
-    if (a.ano !== b.ano) return b.ano - a.ano;
-    return b.mes - a.mes;
+function sortLeiturasDesc(leituras) {
+  return [...leituras].sort((a, b) => b.ano - a.ano || b.mes - a.mes);
+}
+
+function sortLeiturasAsc(leituras) {
+  return [...leituras].sort((a, b) => a.ano - b.ano || a.mes - b.mes);
+}
+
+function recalcLeituras(leituras) {
+  return sortLeiturasAsc(leituras).map((l, i, arr) => {
+    const atual = parseFloat(l.leituraAtual || 0);
+    const anterior = i > 0 ? parseFloat(arr[i - 1].leituraAtual || 0) : null;
+    const consumo = anterior !== null ? atual - anterior : null;
+    const custoPorKwh = consumo > 0 && l.valor ? parseFloat(l.valor) / consumo : null;
+    return { ...l, consumo: consumo > 0 ? consumo : null, custoPorKwh };
   });
+}
+
+function findLeituraAnterior(leituras, leitura) {
+  return sortLeiturasDesc(leituras)
+    .filter(l => l.id !== leitura.id && (l.ano < leitura.ano || (l.ano === leitura.ano && l.mes < leitura.mes)))[0] || null;
+}
+
+function AbaInicio({ leituras, equipamentos, config, dark, setAba }) {
+  const sorted = sortLeiturasDesc(leituras);
   const atual = sorted[0];
   const anterior = sorted[1];
   const textColor = dark ? "rgba(255,255,255,0.9)" : "#1a1a1a";
   const subColor = dark ? "rgba(255,255,255,0.5)" : "#888";
+  const anoBase = atual?.ano || anoAtual;
+  const leiturasAno = leituras.filter(l => l.ano === anoBase);
+  const leiturasComConsumo = leituras.filter(l => l.consumo);
+  const totalAnoKwh = leiturasAno.reduce((s, l) => s + (l.consumo || 0), 0);
+  const totalAnoReais = leiturasAno.reduce((s, l) => s + parseFloat(l.valor || 0), 0);
+  const mediaKwh = leiturasComConsumo.length
+    ? leiturasComConsumo.reduce((s, l) => s + (l.consumo || 0), 0) / leiturasComConsumo.length
+    : null;
+  const mediaReais = leituras.length
+    ? leituras.reduce((s, l) => s + parseFloat(l.valor || 0), 0) / leituras.length
+    : null;
+  const maiorConsumo = leiturasComConsumo.length
+    ? leiturasComConsumo.reduce((max, l) => (l.consumo || 0) > (max.consumo || 0) ? l : max, leiturasComConsumo[0])
+    : null;
+  const menorConsumo = leiturasComConsumo.length
+    ? leiturasComConsumo.reduce((min, l) => (l.consumo || 0) < (min.consumo || 0) ? l : min, leiturasComConsumo[0])
+    : null;
+  const ultimosMeses = sorted.slice(0, 3);
+  const custoEquipamentos = equipamentos.reduce((s, eq) => {
+    const potencia = parseFloat(eq.potencia || 0);
+    const horas = parseFloat(eq.horasDia || 0);
+    const tarifa = atual?.custoPorKwh || config.tarifaBase || 0.75;
+    return s + (potencia / 1000) * horas * 30 * tarifa;
+  }, 0);
 
   const mediaHistorica = leituras.length >= 3
     ? leituras.reduce((s, l) => s + (l.consumo || 0), 0) / leituras.length
@@ -426,6 +470,16 @@ function AbaInicio({ leituras, config, dark, setAba }) {
         </Card>
       )}
 
+      {config.metaReais && atual && (
+        <Card dark={dark} style={{ marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: textColor }}>Meta em reais</div>
+            <Target size={16} color={COLORS.blue} />
+          </div>
+          <ProgressBar value={parseFloat(atual.valor || 0)} max={config.metaReais} dark={dark} unit="" formatter={fmtR} />
+        </Card>
+      )}
+
       {/* Projeção */}
       {mediaUlt3 && (
         <Card dark={dark} style={{ marginBottom: 16 }}>
@@ -440,6 +494,70 @@ function AbaInicio({ leituras, config, dark, setAba }) {
             <TrendingUp size={28} color={COLORS.blue} />
           </div>
         </Card>
+      )}
+
+      {atual && (
+        <>
+          <Section title={`Resumo de ${anoBase}`} dark={dark}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              {[
+                { label: "Consumo no ano", value: `${fmt(totalAnoKwh, 1)} kWh`, color: COLORS.primary },
+                { label: "Gasto no ano", value: fmtR(totalAnoReais), color: COLORS.blue },
+                { label: "Média mensal", value: mediaKwh ? `${fmt(mediaKwh, 1)} kWh` : "—", color: COLORS.amber },
+                { label: "Média da conta", value: mediaReais ? fmtR(mediaReais) : "—", color: COLORS.red },
+              ].map((item, i) => (
+                <Card key={i} dark={dark} style={{ padding: 14 }}>
+                  <div style={{ fontSize: 11, color: subColor, marginBottom: 4 }}>{item.label}</div>
+                  <div style={{ fontSize: 17, fontWeight: 800, color: item.color, fontFamily: "'Nunito', sans-serif" }}>{item.value}</div>
+                </Card>
+              ))}
+            </div>
+          </Section>
+
+          <Section title="Histórico rápido" dark={dark}>
+            <Card dark={dark}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+                <div>
+                  <div style={{ fontSize: 11, color: subColor }}>Maior consumo</div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.red }}>
+                    {maiorConsumo ? `${fmt(maiorConsumo.consumo, 1)} kWh` : "—"}
+                  </div>
+                  {maiorConsumo && <div style={{ fontSize: 11, color: subColor }}>{MESES[maiorConsumo.mes - 1]} {maiorConsumo.ano}</div>}
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: subColor }}>Menor consumo</div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.primary }}>
+                    {menorConsumo ? `${fmt(menorConsumo.consumo, 1)} kWh` : "—"}
+                  </div>
+                  {menorConsumo && <div style={{ fontSize: 11, color: subColor }}>{MESES[menorConsumo.mes - 1]} {menorConsumo.ano}</div>}
+                </div>
+              </div>
+              <div style={{ borderTop: `1px solid ${dark ? "rgba(255,255,255,0.08)" : "#f0f0f0"}`, paddingTop: 10 }}>
+                {ultimosMeses.map(l => (
+                  <div key={l.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0" }}>
+                    <span style={{ fontSize: 13, color: textColor, fontWeight: 600 }}>{MESES[l.mes - 1]} {l.ano}</span>
+                    <span style={{ fontSize: 13, color: subColor }}>{l.consumo ? `${fmt(l.consumo, 1)} kWh` : "—"} · {fmtR(l.valor)}</span>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          </Section>
+
+          {equipamentos.length > 0 && (
+            <Card dark={dark} style={{ marginBottom: 16 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontSize: 12, color: subColor, marginBottom: 4 }}>Equipamentos cadastrados</div>
+                  <div style={{ fontSize: 20, fontWeight: 800, color: textColor, fontFamily: "'Nunito', sans-serif" }}>
+                    {equipamentos.length} item{equipamentos.length > 1 ? "s" : ""}
+                  </div>
+                  <div style={{ fontSize: 12, color: subColor }}>estimativa: {fmtR(custoEquipamentos)}/mês</div>
+                </div>
+                <Cpu size={28} color={COLORS.amber} />
+              </div>
+            </Card>
+          )}
+        </>
       )}
 
       {/* Estado vazio */}
@@ -476,10 +594,6 @@ const mesAtual = new Date().getMonth() + 1;
 const anoAtual = new Date().getFullYear();
 
 function FormLeitura({ leituras, onSave, onCancel, editData, dark }) {
-  const lastLeitura = leituras.length > 0
-    ? [...leituras].sort((a,b) => b.ano - a.ano || b.mes - a.mes)[0]
-    : null;
-
   const [form, setForm] = useState(editData || {
     mes: mesAtual,
     ano: anoAtual,
@@ -488,9 +602,10 @@ function FormLeitura({ leituras, onSave, onCancel, editData, dark }) {
     bandeira: "verde",
     anotacao: "",
   });
+  const leituraReferencia = findLeituraAnterior(leituras, { ...form, id: editData?.id });
 
-  const consumo = lastLeitura && form.leituraAtual
-    ? parseFloat(form.leituraAtual) - parseFloat(lastLeitura.leituraAtual || 0)
+  const consumo = leituraReferencia && form.leituraAtual
+    ? parseFloat(form.leituraAtual) - parseFloat(leituraReferencia.leituraAtual || 0)
     : null;
 
   const custoPorKwh = consumo > 0 && form.valor
@@ -580,7 +695,7 @@ function FormLeitura({ leituras, onSave, onCancel, editData, dark }) {
         }}>Cancelar</button>
         <button onClick={() => {
           if (!form.leituraAtual || !form.valor) return;
-          const c = lastLeitura && !editData ? parseFloat(form.leituraAtual) - parseFloat(lastLeitura.leituraAtual || 0) : (editData?.consumo || 0);
+          const c = leituraReferencia ? parseFloat(form.leituraAtual) - parseFloat(leituraReferencia.leituraAtual || 0) : null;
           const ckwh = c > 0 ? parseFloat(form.valor) / c : null;
           onSave({ ...form, consumo: c > 0 ? c : null, custoPorKwh: ckwh, id: editData?.id || crypto.randomUUID() });
         }} style={{
@@ -596,12 +711,125 @@ function FormLeitura({ leituras, onSave, onCancel, editData, dark }) {
   );
 }
 
+function LeituraDetalhes({ leitura, leituras, onClose, onEdit, onDelete, dark }) {
+  const textColor = dark ? "rgba(255,255,255,0.9)" : "#1a1a1a";
+  const subColor = dark ? "rgba(255,255,255,0.5)" : "#888";
+  const anterior = findLeituraAnterior(leituras, leitura);
+  const variacao = anterior?.consumo && leitura.consumo
+    ? ((leitura.consumo - anterior.consumo) / anterior.consumo) * 100
+    : null;
+  const detalhes = [
+    { label: "Leitura do medidor", value: `${fmt(parseFloat(leitura.leituraAtual || 0), 1)} kWh`, color: textColor },
+    { label: "Consumo calculado", value: leitura.consumo ? `${fmt(leitura.consumo, 1)} kWh` : "Primeira leitura", color: COLORS.primary },
+    { label: "Valor da conta", value: fmtR(leitura.valor), color: COLORS.blue },
+    { label: "Custo por kWh", value: leitura.custoPorKwh ? fmtR(leitura.custoPorKwh) : "—", color: COLORS.amber },
+  ];
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 500,
+      background: dark ? "rgba(0,0,0,0.65)" : "rgba(10,20,30,0.35)",
+      display: "flex", alignItems: "flex-end", justifyContent: "center",
+      padding: "16px 12px 84px"
+    }} onClick={onClose}>
+      <div style={{
+        width: "100%", maxWidth: 456, maxHeight: "78vh", overflowY: "auto",
+        background: dark ? COLORS.cardDark : "#fff",
+        borderRadius: 18, padding: 18,
+        boxShadow: "0 14px 44px rgba(0,0,0,0.28)",
+        border: dark ? "1px solid rgba(255,255,255,0.08)" : "1px solid rgba(0,0,0,0.06)",
+        animation: "fadeSlideIn 0.25s ease"
+      }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 14 }}>
+          <div>
+            <div style={{ fontSize: 12, color: subColor }}>Detalhes da leitura</div>
+            <h2 style={{ margin: "2px 0 8px", fontSize: 20, color: textColor, fontWeight: 800, fontFamily: "'Nunito', sans-serif" }}>
+              {MESES[leitura.mes - 1]} {leitura.ano}
+            </h2>
+            <Badge bandeira={leitura.bandeira} />
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: subColor, padding: 4 }}>
+            <X size={22} />
+          </button>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+          {detalhes.map((d, i) => (
+            <div key={i} style={{
+              background: dark ? "rgba(255,255,255,0.05)" : "#f7f8fa",
+              borderRadius: 10, padding: "10px 12px"
+            }}>
+              <div style={{ fontSize: 11, color: subColor, marginBottom: 4 }}>{d.label}</div>
+              <div style={{ fontSize: 15, fontWeight: 800, color: d.color }}>{d.value}</div>
+            </div>
+          ))}
+        </div>
+
+        {anterior && (
+          <div style={{
+            borderTop: `1px solid ${dark ? "rgba(255,255,255,0.08)" : "#f0f0f0"}`,
+            borderBottom: `1px solid ${dark ? "rgba(255,255,255,0.08)" : "#f0f0f0"}`,
+            padding: "12px 0", marginBottom: 14
+          }}>
+            <div style={{ fontSize: 12, color: subColor, marginBottom: 8 }}>Comparação com leitura anterior</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+              <span style={{ fontSize: 13, color: textColor, fontWeight: 700 }}>{MESES[anterior.mes - 1]} {anterior.ano}</span>
+              <span style={{ fontSize: 13, color: subColor }}>{anterior.consumo ? `${fmt(anterior.consumo, 1)} kWh` : "primeira leitura"}</span>
+              {variacao !== null && (
+                <span style={{ fontSize: 13, fontWeight: 800, color: variacao > 0 ? COLORS.red : COLORS.primary }}>
+                  {variacao > 0 ? "+" : ""}{variacao.toFixed(1)}%
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {leitura.anotacao && (
+          <div style={{ fontSize: 13, color: subColor, fontStyle: "italic", lineHeight: 1.5, marginBottom: 14 }}>
+            "{leitura.anotacao}"
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={() => onEdit(leitura)} style={{
+            flex: 1, padding: 12, borderRadius: 12, border: "none",
+            background: COLORS.blue, color: "#fff", fontSize: 14, fontWeight: 700,
+            cursor: "pointer", fontFamily: "'Nunito', sans-serif"
+          }}>
+            <Edit2 size={15} style={{ display: "inline", marginRight: 6, verticalAlign: "middle" }} /> Editar
+          </button>
+          <button onClick={() => { if (confirm("Excluir esta leitura?")) onDelete(leitura.id); }} style={{
+            flex: 1, padding: 12, borderRadius: 12, border: `1px solid ${COLORS.red}40`,
+            background: `${COLORS.red}10`, color: COLORS.red, fontSize: 14, fontWeight: 700,
+            cursor: "pointer", fontFamily: "'Nunito', sans-serif"
+          }}>
+            <Trash2 size={15} style={{ display: "inline", marginRight: 6, verticalAlign: "middle" }} /> Excluir
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AbaLeituras({ leituras, onSave, onDelete, dark }) {
   const [showForm, setShowForm] = useState(false);
   const [editData, setEditData] = useState(null);
+  const anos = [...new Set(leituras.map(l => l.ano))].sort((a,b) => b - a);
+  const [anoSel, setAnoSel] = useState(anos[0] || anoAtual);
+  const [detalhe, setDetalhe] = useState(null);
   const textColor = dark ? "rgba(255,255,255,0.9)" : "#1a1a1a";
   const subColor = dark ? "rgba(255,255,255,0.5)" : "#888";
-  const sorted = [...leituras].sort((a,b) => b.ano - a.ano || b.mes - a.mes);
+  const sorted = sortLeiturasDesc(leituras);
+  const leiturasFiltradas = sorted.filter(l => l.ano === anoSel);
+  useEffect(() => {
+    if (anos.length > 0 && !anos.includes(anoSel)) setAnoSel(anos[0]);
+  }, [anos, anoSel]);
+  const inputStyle = {
+    padding: "8px 14px", borderRadius: 10, fontSize: 14,
+    border: `1px solid ${dark ? "rgba(255,255,255,0.15)" : "#e0e0e0"}`,
+    background: dark ? "rgba(255,255,255,0.06)" : "#fafafa",
+    color: textColor, fontFamily: "'Nunito', sans-serif", outline: "none"
+  };
 
   if (showForm || editData) {
     return (
@@ -637,6 +865,17 @@ function AbaLeituras({ leituras, onSave, onDelete, dark }) {
         </button>
       </div>
 
+      {sorted.length > 0 && (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <div style={{ fontSize: 13, color: subColor }}>
+            {leiturasFiltradas.length} leitura{leiturasFiltradas.length !== 1 ? "s" : ""} em {anoSel}
+          </div>
+          <select style={inputStyle} value={anoSel} onChange={e => setAnoSel(+e.target.value)}>
+            {anos.map(a => <option key={a} value={a}>{a}</option>)}
+          </select>
+        </div>
+      )}
+
       {sorted.length === 0 ? (
         <Card dark={dark} style={{ textAlign: "center", padding: "36px 24px" }}>
           <svg width="72" height="72" viewBox="0 0 72 72" fill="none" style={{ marginBottom: 14 }}>
@@ -662,10 +901,22 @@ function AbaLeituras({ leituras, onSave, onDelete, dark }) {
             <Plus size={15} /> Adicionar leitura
           </button>
         </Card>
+      ) : leiturasFiltradas.length === 0 ? (
+        <Card dark={dark} style={{ textAlign: "center", padding: "28px 20px" }}>
+          <div style={{ fontSize: 16, fontWeight: 800, color: textColor, marginBottom: 8, fontFamily: "'Nunito', sans-serif" }}>
+            Sem leituras em {anoSel}
+          </div>
+          <div style={{ fontSize: 13, color: subColor, lineHeight: 1.6 }}>
+            Escolha outro ano ou registre uma nova leitura para este período.
+          </div>
+        </Card>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {sorted.map((l, i) => (
-            <Card key={l.id} dark={dark} style={{ position: "relative" }}>
+          {leiturasFiltradas.map((l, i) => (
+            <Card key={l.id} dark={dark} style={{ position: "relative", cursor: "pointer" }}>
+              <div onClick={() => setDetalhe(l)} role="button" tabIndex={0}
+                onKeyDown={e => { if (e.key === "Enter" || e.key === " ") setDetalhe(l); }}
+                style={{ outline: "none" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                 <div>
                   <div style={{ fontSize: 15, fontWeight: 700, color: textColor, fontFamily: "'Nunito', sans-serif" }}>
@@ -690,17 +941,28 @@ function AbaLeituras({ leituras, onSave, onDelete, dark }) {
                   )}
                 </div>
                 <div style={{ display: "flex", gap: 6 }}>
-                  <button onClick={() => setEditData(l)} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.blue, padding: 4 }}>
+                  <button onClick={(e) => { e.stopPropagation(); setEditData(l); }} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.blue, padding: 4 }}>
                     <Edit2 size={16} />
                   </button>
-                  <button onClick={() => { if (confirm("Excluir esta leitura?")) onDelete(l.id); }} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.red, padding: 4 }}>
+                  <button onClick={(e) => { e.stopPropagation(); if (confirm("Excluir esta leitura?")) onDelete(l.id); }} style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.red, padding: 4 }}>
                     <Trash2 size={16} />
                   </button>
                 </div>
               </div>
+              </div>
             </Card>
           ))}
         </div>
+      )}
+      {detalhe && (
+        <LeituraDetalhes
+          leitura={detalhe}
+          leituras={leituras}
+          dark={dark}
+          onClose={() => setDetalhe(null)}
+          onEdit={(l) => { setDetalhe(null); setEditData(l); }}
+          onDelete={(id) => { setDetalhe(null); onDelete(id); }}
+        />
       )}
     </div>
   );
@@ -1620,7 +1882,7 @@ export default function App() {
 
   // Custo médio por kWh dos últimos meses
   const custoPorKwh = useMemo(() => {
-    const recentes = leituras.filter(l => l.custoPorKwh).slice(-3);
+    const recentes = sortLeiturasDesc(leituras).filter(l => l.custoPorKwh).slice(0, 3);
     if (recentes.length === 0) return config.tarifaBase || 0.75;
     return recentes.reduce((s, l) => s + l.custoPorKwh, 0) / recentes.length;
   }, [leituras, config.tarifaBase]);
@@ -1645,14 +1907,16 @@ export default function App() {
   }, []);
 
   const saveLeitura = useCallback((d) => {
+    const duplicada = dadosPerfil.leituras.find(l => l.id !== d.id && l.mes === d.mes && l.ano === d.ano);
+    const leituraParaSalvar = duplicada ? { ...d, id: duplicada.id } : d;
     updateDados(prev => {
-      const exists = prev.leituras.find(l => l.id === d.id);
+      const exists = prev.leituras.find(l => l.id === leituraParaSalvar.id);
       const leituras = exists
-        ? prev.leituras.map(l => l.id === d.id ? d : l)
-        : [...prev.leituras, d];
-      return { ...prev, leituras };
+        ? prev.leituras.map(l => l.id === leituraParaSalvar.id ? leituraParaSalvar : l)
+        : [...prev.leituras, leituraParaSalvar];
+      return { ...prev, leituras: recalcLeituras(leituras) };
     });
-    toast(d.id && dadosPerfil.leituras.find(l => l.id === d.id) ? "Leitura atualizada!" : "Leitura registrada!");
+    toast(duplicada || dadosPerfil.leituras.find(l => l.id === d.id) ? "Leitura atualizada!" : "Leitura registrada!");
   }, [updateDados, toast, dadosPerfil.leituras]);
 
   const deleteLeitura = useCallback((id) => {
@@ -1778,7 +2042,7 @@ export default function App() {
         <div style={{ padding: "20px 16px 88px" }}>
           {/* Animated tab content — key forces remount + animation on tab change */}
           <div key={aba} style={{ animation: "fadeSlideIn 0.32s cubic-bezier(0.22,1,0.36,1)" }}>
-            {aba === "inicio" && <AbaInicio leituras={leituras} config={config} dark={dark} setAba={setAba} />}
+            {aba === "inicio" && <AbaInicio leituras={leituras} equipamentos={equipamentos} config={config} dark={dark} setAba={setAba} />}
             {aba === "leituras" && <AbaLeituras leituras={leituras} onSave={saveLeitura} onDelete={deleteLeitura} dark={dark} />}
             {aba === "equipamentos" && <AbaEquipamentos equipamentos={equipamentos} onSave={saveEquipamento} onDelete={deleteEquipamento} custoPorKwh={custoPorKwh} dark={dark} />}
             {aba === "relatorios" && <AbaRelatorios leituras={leituras} dark={dark} />}
