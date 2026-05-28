@@ -12,6 +12,7 @@ import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis,
   CartesianGrid, Tooltip, ResponsiveContainer, Cell
 } from "recharts";
+import { isBackupAvailable, loadRemoteBackup, saveRemoteBackup } from "./backup";
 
 // ─── Paleta de cores ──────────────────────────────────────────────────────────
 const COLORS = {
@@ -77,6 +78,10 @@ function defaultState() {
       metaReais: null,
       diaLembrete: 5,
       tarifaBase: 0.75,
+      backup: {
+        enabled: false,
+        code: "",
+      },
     }
   };
 }
@@ -1712,8 +1717,10 @@ function NotificacaoConfig({ config, setConfig, dark, toast }) {
 }
 
 // ─── ABA: CONFIGURAÇÕES ───────────────────────────────────────────────────────
-function AbaConfig({ config, setConfig, perfis, perfilAtivo, onAddPerfil, onSwitchPerfil, onDeletePerfil, dark, onClearData, toast }) {
+function AbaConfig({ config, setConfig, perfis, perfilAtivo, onAddPerfil, onSwitchPerfil, onDeletePerfil, dark, onClearData, toast, backupStatus, onRestoreBackup }) {
   const [novoPerfil, setNovoPerfil] = useState("");
+  const backup = config.backup || { enabled: false, code: "" };
+  const backupAvailable = isBackupAvailable();
   const textColor = dark ? "rgba(255,255,255,0.9)" : "#1a1a1a";
   const subColor = dark ? "rgba(255,255,255,0.5)" : "#888";
   const inputStyle = {
@@ -1771,6 +1778,62 @@ function AbaConfig({ config, setConfig, perfis, perfilAtivo, onAddPerfil, onSwit
       <Section title="Lembrete mensal" dark={dark}>
         <Card dark={dark}>
           <NotificacaoConfig config={config} setConfig={setConfig} dark={dark} toast={toast} />
+        </Card>
+      </Section>
+
+      {/* Backup automatico */}
+      <Section title="Backup automatico" dark={dark}>
+        <Card dark={dark}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ fontSize: 13, color: subColor, lineHeight: 1.45 }}>
+              Salva uma copia remota no Firestore sempre que os dados mudam. Use o mesmo codigo para restaurar em outro navegador.
+            </div>
+            {!backupAvailable && (
+              <div style={{
+                fontSize: 12, color: COLORS.amber, background: `${COLORS.amber}12`,
+                border: `1px solid ${COLORS.amber}35`, padding: 10, borderRadius: 10
+              }}>
+                Configure as variaveis do Firebase na Vercel para ativar o backup remoto.
+              </div>
+            )}
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 600, color: subColor, marginBottom: 5, display: "block" }}>Codigo de backup</label>
+              <input type="password" style={inputStyle} placeholder="Crie um codigo forte e guarde em local seguro"
+                value={backup.code || ""}
+                onChange={e => setConfig(p => ({ ...p, backup: { ...(p.backup || {}), code: e.target.value } }))} />
+            </div>
+            <button disabled={!backupAvailable || !backup.code?.trim()} onClick={() => {
+              setConfig(p => ({
+                ...p,
+                backup: { ...(p.backup || {}), enabled: !Boolean(p.backup?.enabled) }
+              }));
+              toast(backup.enabled ? "Backup automatico desativado" : "Backup automatico ativado!");
+            }} style={{
+              width: "100%", padding: 12, borderRadius: 12, border: "none",
+              background: backup.enabled ? `${COLORS.amber}20` : COLORS.primary,
+              color: backup.enabled ? COLORS.amber : "#fff", fontSize: 14, fontWeight: 600,
+              cursor: backupAvailable && backup.code?.trim() ? "pointer" : "not-allowed",
+              opacity: backupAvailable && backup.code?.trim() ? 1 : 0.55,
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+              fontFamily: "'Nunito', sans-serif"
+            }}>
+              <Save size={16} /> {backup.enabled ? "Desativar backup" : "Ativar backup automatico"}
+            </button>
+            <button disabled={!backupAvailable} onClick={onRestoreBackup} style={{
+              width: "100%", padding: 12, borderRadius: 12,
+              border: `1px solid ${COLORS.primary}40`, background: `${COLORS.primary}10`,
+              color: COLORS.primary, fontSize: 14, fontWeight: 600,
+              cursor: backupAvailable ? "pointer" : "not-allowed",
+              opacity: backupAvailable ? 1 : 0.55,
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+              fontFamily: "'Nunito', sans-serif"
+            }}>
+              <Download size={16} /> Restaurar backup
+            </button>
+            <div style={{ fontSize: 12, color: subColor }}>
+              Status: {backupStatus}
+            </div>
+          </div>
         </Card>
       </Section>
 
@@ -1871,7 +1934,11 @@ export default function App() {
   const [splash, setSplash] = useState(true);
   const [aba, setAba] = useState("inicio");
   const [appData, setAppData] = useState(() => loadData() || defaultState());
+  const [backupStatus, setBackupStatus] = useState(() => (
+    isBackupAvailable() ? "Aguardando ativacao" : "Firebase nao configurado"
+  ));
   const { toasts, add: toast } = useToast();
+  const backupTimerRef = useRef(null);
 
   const config = appData.configuracoes;
   const dark = config.tema === "escuro";
@@ -1890,6 +1957,35 @@ export default function App() {
   // Persist
   useEffect(() => {
     saveData(appData);
+  }, [appData]);
+
+  // Backup remoto automatico
+  useEffect(() => {
+    const backup = appData.configuracoes?.backup;
+    if (!backup?.enabled) {
+      setBackupStatus(isBackupAvailable() ? "Desativado" : "Firebase nao configurado");
+      return;
+    }
+    if (!backup.code?.trim()) {
+      setBackupStatus("Informe um codigo de backup");
+      return;
+    }
+    if (!isBackupAvailable()) {
+      setBackupStatus("Firebase nao configurado");
+      return;
+    }
+
+    setBackupStatus("Salvando...");
+    if (backupTimerRef.current) clearTimeout(backupTimerRef.current);
+    backupTimerRef.current = setTimeout(() => {
+      saveRemoteBackup(appData, backup.code)
+        .then(() => setBackupStatus(`Salvo em ${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`))
+        .catch(() => setBackupStatus("Falha ao salvar backup"));
+    }, 1200);
+
+    return () => {
+      if (backupTimerRef.current) clearTimeout(backupTimerRef.current);
+    };
   }, [appData]);
 
   // Lembrete mensal via notificação
@@ -1967,6 +2063,42 @@ export default function App() {
     setAppData(fresh);
     localStorage.removeItem(LS_KEY);
   }, []);
+
+  const restoreBackup = useCallback(async () => {
+    const code = prompt("Digite o codigo de backup para restaurar:");
+    if (!code?.trim()) return;
+    if (!confirm("Restaurar o backup vai substituir os dados atuais deste navegador. Continuar?")) return;
+
+    setBackupStatus("Restaurando...");
+    try {
+      const backup = await loadRemoteBackup(code);
+      if (!backup) {
+        setBackupStatus("Backup nao encontrado");
+        toast("Backup nao encontrado", "warn");
+        return;
+      }
+
+      const restored = {
+        ...backup,
+        configuracoes: {
+          ...backup.configuracoes,
+          backup: {
+            ...(backup.configuracoes?.backup || {}),
+            enabled: true,
+            code,
+          },
+        },
+      };
+
+      setAppData(restored);
+      saveData(restored);
+      setBackupStatus("Backup restaurado");
+      toast("Backup restaurado!");
+    } catch {
+      setBackupStatus("Falha ao restaurar backup");
+      toast("Falha ao restaurar backup", "error");
+    }
+  }, [toast]);
 
   const bg = dark ? COLORS.bgDark : "#f4f6f8";
   const contentBg = dark ? COLORS.bgDark : "#f4f6f8";
@@ -2048,7 +2180,7 @@ export default function App() {
             {aba === "relatorios" && <AbaRelatorios leituras={leituras} dark={dark} />}
             {aba === "config" && <AbaConfig config={config} setConfig={setConfig} perfis={appData.perfis} perfilAtivo={perfilAtivo}
               onAddPerfil={addPerfil} onSwitchPerfil={switchPerfil} onDeletePerfil={deletePerfil}
-              dark={dark} onClearData={clearData} toast={toast} />}
+              dark={dark} onClearData={clearData} toast={toast} backupStatus={backupStatus} onRestoreBackup={restoreBackup} />}
           </div>
         </div>
 

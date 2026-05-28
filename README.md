@@ -2,7 +2,7 @@
 
 **Controle inteligente do seu consumo elétrico**
 
-App web PWA para monitoramento de consumo elétrico residencial. Todos os dados são salvos localmente no dispositivo (localStorage), sem necessidade de backend ou autenticação.
+App web PWA para monitoramento de consumo elétrico residencial. Por padrão, os dados são salvos localmente no dispositivo (`localStorage`), com backup remoto opcional via Firestore.
 
 ---
 
@@ -101,9 +101,49 @@ O app funcionará offline após a primeira visita.
 | Nunito (Google Fonts) | Tipografia |
 | html2canvas + jsPDF | Exportação PDF |
 | localStorage | Persistência de dados |
+| Firebase Firestore | Backup remoto opcional |
+
+---
+
+## Backup automático com Firestore
+
+O app continua funcionando offline com `localStorage`, mas pode salvar uma cópia remota no Firestore quando o backup for ativado em **Configurações > Backup automático**.
+
+### Configuração
+
+1. Crie um projeto no Firebase.
+2. Ative o Firestore.
+3. Copie as credenciais do app Web do Firebase.
+4. Configure as variáveis do arquivo `.env.example` no `.env` local e também na Vercel.
+5. Publique novamente o app.
+
+### Regras simples para uso pessoal
+
+Use regras restritas ao caminho de backup:
+
+```js
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /luzcontrol_backups/{backupId} {
+      allow read, write: if true;
+    }
+  }
+}
+```
+
+Para um app público, o ideal é adicionar login antes de abrir escrita no Firestore. Esta implementação prioriza simplicidade para uso pessoal.
+
+### Como usar
+
+1. Abra o app.
+2. Entre em **Configurações > Backup automático**.
+3. Crie um código forte e guarde esse código fora do navegador.
+4. Ative o backup automático.
+5. Para recuperar dados, use **Restaurar backup** e informe o mesmo código.
 
 ---
 
 ## Dados e privacidade
 
-Todos os dados (leituras, equipamentos, configurações, perfis) são armazenados **exclusivamente no localStorage do navegador do usuário**. Nenhum dado é enviado para servidores externos.
+Por padrão, os dados (leituras, equipamentos, configurações, perfis) ficam no `localStorage` do navegador. Quando o backup automático é ativado, uma cópia dos dados é enviada para o Firestore configurado no projeto.
