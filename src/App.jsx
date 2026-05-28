@@ -1717,7 +1717,7 @@ function NotificacaoConfig({ config, setConfig, dark, toast }) {
 }
 
 // ─── ABA: CONFIGURAÇÕES ───────────────────────────────────────────────────────
-function AbaConfig({ config, setConfig, perfis, perfilAtivo, onAddPerfil, onSwitchPerfil, onDeletePerfil, dark, onClearData, toast, backupStatus, onRestoreBackup }) {
+function AbaConfig({ config, setConfig, perfis, perfilAtivo, onAddPerfil, onSwitchPerfil, onDeletePerfil, dark, onClearData, toast, backupStatus, onRestoreBackup, onToggleBackup }) {
   const [novoPerfil, setNovoPerfil] = useState("");
   const backup = config.backup || { enabled: false, code: "" };
   const backupAvailable = isBackupAvailable();
@@ -1802,13 +1802,7 @@ function AbaConfig({ config, setConfig, perfis, perfilAtivo, onAddPerfil, onSwit
                 value={backup.code || ""}
                 onChange={e => setConfig(p => ({ ...p, backup: { ...(p.backup || {}), code: e.target.value } }))} />
             </div>
-            <button disabled={!backupAvailable || !backup.code?.trim()} onClick={() => {
-              setConfig(p => ({
-                ...p,
-                backup: { ...(p.backup || {}), enabled: !Boolean(p.backup?.enabled) }
-              }));
-              toast(backup.enabled ? "Backup automatico desativado" : "Backup automatico ativado!");
-            }} style={{
+            <button disabled={!backupAvailable || !backup.code?.trim()} onClick={onToggleBackup} style={{
               width: "100%", padding: 12, borderRadius: 12, border: "none",
               background: backup.enabled ? `${COLORS.amber}20` : COLORS.primary,
               color: backup.enabled ? COLORS.amber : "#fff", fontSize: 14, fontWeight: 600,
@@ -2064,6 +2058,66 @@ export default function App() {
     localStorage.removeItem(LS_KEY);
   }, []);
 
+  const applyRestoredBackup = useCallback((backup, code) => {
+    const restored = {
+      ...backup,
+      configuracoes: {
+        ...backup.configuracoes,
+        backup: {
+          ...(backup.configuracoes?.backup || {}),
+          enabled: true,
+          code,
+        },
+      },
+    };
+
+    setAppData(restored);
+    saveData(restored);
+  }, []);
+
+  const toggleBackup = useCallback(async () => {
+    const backup = appData.configuracoes?.backup || {};
+
+    if (backup.enabled) {
+      setConfig(p => ({ ...p, backup: { ...(p.backup || {}), enabled: false } }));
+      toast("Backup automatico desativado");
+      return;
+    }
+
+    const code = backup.code?.trim();
+    if (!code) {
+      toast("Informe um codigo de backup", "warn");
+      return;
+    }
+
+    setBackupStatus("Verificando backup existente...");
+    try {
+      const remoteBackup = await loadRemoteBackup(code);
+      if (remoteBackup) {
+        const shouldRestore = confirm("Ja existe um backup com esse codigo. Deseja restaurar esses dados neste aparelho?");
+        if (shouldRestore) {
+          applyRestoredBackup(remoteBackup, code);
+          setBackupStatus("Backup restaurado");
+          toast("Backup restaurado!");
+          return;
+        }
+
+        const shouldOverwrite = confirm("Manter os dados deste aparelho e sobrescrever o backup existente?");
+        if (!shouldOverwrite) {
+          setBackupStatus("Ativacao cancelada");
+          return;
+        }
+      }
+
+      setConfig(p => ({ ...p, backup: { ...(p.backup || {}), enabled: true, code } }));
+      setBackupStatus("Backup automatico ativado");
+      toast("Backup automatico ativado!");
+    } catch {
+      setBackupStatus("Falha ao verificar backup");
+      toast("Falha ao verificar backup", "error");
+    }
+  }, [appData.configuracoes?.backup, applyRestoredBackup, setConfig, toast]);
+
   const restoreBackup = useCallback(async () => {
     const code = prompt("Digite o codigo de backup para restaurar:");
     if (!code?.trim()) return;
@@ -2078,27 +2132,14 @@ export default function App() {
         return;
       }
 
-      const restored = {
-        ...backup,
-        configuracoes: {
-          ...backup.configuracoes,
-          backup: {
-            ...(backup.configuracoes?.backup || {}),
-            enabled: true,
-            code,
-          },
-        },
-      };
-
-      setAppData(restored);
-      saveData(restored);
+      applyRestoredBackup(backup, code);
       setBackupStatus("Backup restaurado");
       toast("Backup restaurado!");
     } catch {
       setBackupStatus("Falha ao restaurar backup");
       toast("Falha ao restaurar backup", "error");
     }
-  }, [toast]);
+  }, [applyRestoredBackup, toast]);
 
   const bg = dark ? COLORS.bgDark : "#f4f6f8";
   const contentBg = dark ? COLORS.bgDark : "#f4f6f8";
@@ -2180,7 +2221,7 @@ export default function App() {
             {aba === "relatorios" && <AbaRelatorios leituras={leituras} dark={dark} />}
             {aba === "config" && <AbaConfig config={config} setConfig={setConfig} perfis={appData.perfis} perfilAtivo={perfilAtivo}
               onAddPerfil={addPerfil} onSwitchPerfil={switchPerfil} onDeletePerfil={deletePerfil}
-              dark={dark} onClearData={clearData} toast={toast} backupStatus={backupStatus} onRestoreBackup={restoreBackup} />}
+              dark={dark} onClearData={clearData} toast={toast} backupStatus={backupStatus} onRestoreBackup={restoreBackup} onToggleBackup={toggleBackup} />}
           </div>
         </div>
 

@@ -140,7 +140,8 @@ Para um app público, o ideal é adicionar login antes de abrir escrita no Fires
 2. Entre em **Configurações > Backup automático**.
 3. Crie um código forte e guarde esse código fora do navegador.
 4. Ative o backup automático.
-5. Para recuperar dados, use **Restaurar backup** e informe o mesmo código.
+5. Em outro aparelho, informe o mesmo código e escolha restaurar o backup existente.
+6. Para recuperar dados manualmente, use **Restaurar backup** e informe o mesmo código.
 
 ---
 
